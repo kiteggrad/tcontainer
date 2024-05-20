@@ -160,7 +160,7 @@ func main() {
     ```
 - ### `WithRemoveContainerOnExists`
     Позволяет удалить существующий контейнер вместо получения ошибки о том что контейнер уже существует.
-    - Не должен использоваться вместе с `WithRemoveContainerOnExists` - вернёт ошибку `ErrOptionsConflict`.
+    - Не должен использоваться вместе с `WithReuseContainer` - вернёт ошибку `ErrOptionsConflict`.
 
     По умолчанию: `false`
 

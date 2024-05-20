@@ -160,7 +160,7 @@ func main() {
     ```
 - ### `WithRemoveContainerOnExists`
     Allows you to remove an existing container instead of getting an error that the container already exists.
-    - Should not be used together with `WithRemoveContainerOnExists` - will return `ErrOptionsConflict` error.
+    - Should not be used together with `WithReuseContainer` - will return `ErrOptionsConflict` error.
 
     Default: `false`
 
