@@ -2,30 +2,34 @@ package tcontainer
 
 import (
 	"fmt"
+	"net"
 	"net/http"
+	"strconv"
 	"testing"
 	"time"
 
-	"github.com/kiteggrad/freeport"
 	"github.com/ory/dockertest/v3"
 	"github.com/ory/dockertest/v3/docker"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/goleak"
+
+	"github.com/kiteggrad/freeport"
 )
 
 func TestMain(m *testing.M) {
 	goleak.VerifyTestMain(m)
 }
 
-const containerApiPort = 80
+const containerAPIPort = 80
 
 // newBusybox - creates minimal configureated busybox container for tests.
 func newBusybox(customOpts ...TestContainerOption) (dockerPool *dockertest.Pool, container *dockertest.Resource, err error) {
-	startServerCMD := fmt.Sprintf(`echo 'Hello, World!' > /index.html && httpd -p %d -h / && tail -f /dev/null`, containerApiPort)
+	startServerCMD := fmt.Sprintf(`echo 'Hello, World!' > /index.html && httpd -p %d -h / && tail -f /dev/null`, containerAPIPort)
 
-	retry := func(container *dockertest.Resource, apiEndpoints map[int]ApiEndpoint) (err error) {
-		resp, err := http.Get(fmt.Sprintf("http://%s:%d", apiEndpoints[containerApiPort].IP, apiEndpoints[containerApiPort].Port))
+	retry := func(_ *dockertest.Resource, apiEndpoints map[int]APIEndpoint) (err error) {
+		endpoint := apiEndpoints[containerAPIPort]
+		resp, err := http.Get("http://" + endpoint.NetJoinHostPort())
 		if err != nil {
 			return fmt.Errorf("failed to http.Get: %w", err)
 		}
@@ -40,7 +44,7 @@ func newBusybox(customOpts ...TestContainerOption) (dockerPool *dockertest.Pool,
 
 	opts := append([]TestContainerOption{
 		WithCMD("sh", "-c", startServerCMD),
-		WithExposedPorts(containerApiPort),
+		WithExposedPorts(containerAPIPort),
 		WithRetry(retry, 0),
 	}, customOpts...)
 
@@ -54,7 +58,7 @@ func newBusybox(customOpts ...TestContainerOption) (dockerPool *dockertest.Pool,
 		return nil, nil, fmt.Errorf("failed to InspectContainer: %w", err)
 	}
 
-	return dockerPool, container, err
+	return dockerPool, container, nil
 }
 
 func Test_New_Simple(t *testing.T) {
@@ -123,11 +127,11 @@ func Test_New_WithPortBindings(t *testing.T) {
 
 	bindedPort := freeport.MustGet()
 
-	_, container, err := newBusybox(WithPortBindings(map[int]int{containerApiPort: bindedPort}))
+	_, container, err := newBusybox(WithPortBindings(map[int]int{containerAPIPort: bindedPort}))
 	require.NoError(err)
 	t.Cleanup(func() { assert.NoError(container.Close()) })
 
-	resp, err := http.Get(fmt.Sprintf("http://%s:%d", getLocalhost(), bindedPort))
+	resp, err := http.Get("http://" + net.JoinHostPort(getLocalhost(), strconv.Itoa(bindedPort)))
 	require.NoError(err)
 	defer resp.Body.Close()
 	require.Equal(http.StatusOK, resp.StatusCode)
@@ -147,7 +151,7 @@ func Test_New_WithStartTimeout(t *testing.T) {
 		err error
 	}
 	type testCase struct {
-		skip string
+		skip string `exhaustruct:"optional"`
 		args args
 		want want
 	}
@@ -190,10 +194,11 @@ func Test_New_WithStartTimeout(t *testing.T) {
 		name := name
 		test := test
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
 			if test.skip != "" {
 				t.Skip(test.skip)
 			}
-			t.Parallel()
 			require := require.New(t)
 			assert := assert.New(t)
 
@@ -203,7 +208,7 @@ func Test_New_WithStartTimeout(t *testing.T) {
 			currentRetryIteration := 0
 			pool, container, err := newBusybox(
 				WithRetry(
-					func(container *dockertest.Resource, apiEndpoints map[int]ApiEndpoint) (err error) {
+					func(_ *dockertest.Resource, _ map[int]APIEndpoint) (err error) {
 						defer func() { currentRetryIteration++ }()
 
 						if currentRetryIteration == 0 {
@@ -251,7 +256,7 @@ func Test_New_WithExpiry(t *testing.T) {
 
 	container.Container, err = dockerPool.Client.InspectContainer(container.Container.ID)
 	if err != nil {
-		noSuchContainerErr := &docker.NoSuchContainer{}
+		var noSuchContainerErr *docker.NoSuchContainer
 		require.ErrorAs(err, &noSuchContainerErr)
 	} else {
 		require.False(container.Container.State.Running)
@@ -299,7 +304,7 @@ func Test_New_WithAutoremove(t *testing.T) {
 		time.Sleep(expiry + time.Second*2)
 
 		container.Container, err = dockerPool.Client.InspectContainer(container.Container.ID)
-		noSuchContainerErr := &docker.NoSuchContainer{}
+		var noSuchContainerErr *docker.NoSuchContainer
 		require.ErrorAs(err, &noSuchContainerErr)
 	})
 }
@@ -319,6 +324,7 @@ func Test_New_WithReuseContainer_false(t *testing.T) {
 	require.ErrorIs(err, docker.ErrContainerAlreadyExists)
 }
 
+// TODO: tests for diffrerent container statuses - restarting, oom, ...
 func Test_New_WithReuseContainer_true(t *testing.T) {
 	t.Parallel()
 	require := require.New(t)
@@ -348,7 +354,7 @@ func Test_New_WithReuseContainer_recreateOnError(t *testing.T) {
 	oldContainerID := container.Container.ID
 	assert.NotEmpty(oldContainerID)
 
-	_, container, err = newBusybox(WithContainerName(containerName), WithReuseContainer(true, 0, true), WithExposedPorts(containerApiPort, freeport.MustGet()))
+	_, container, err = newBusybox(WithContainerName(containerName), WithReuseContainer(true, 0, true), WithExposedPorts(containerAPIPort, freeport.MustGet()))
 	require.NoError(err)
 	t.Cleanup(func() { assert.NoError(container.Close()) })
 

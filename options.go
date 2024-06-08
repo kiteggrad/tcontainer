@@ -9,27 +9,30 @@ import (
 	"github.com/ory/dockertest/v3/docker"
 )
 
-const ( // TODO: set defaults
+const (
 	defaultImageTag                    = "latest"
 	defaultContainerExpiry             = time.Minute
-	defaultRetryTimeout                = time.Minute
+	defaultRetryTimeout                = time.Second * 20 // we use 20s because of 30s is default go test timeout
 	defaultAutoremoveContainer         = true
 	defaultReuseContainer              = false
-	defaultReuseContainerTimeout       = time.Minute
+	defaultReuseContainerTimeout       = time.Second * 20 // we use 20s because of 30s is default go test timeout
 	defaultReuseContainerRecreateOnErr = false
 	defaultRemoveContainerOnExists     = false
+
+	retryOperationMaxInterval = time.Second * 5
 )
 
 var (
-	// ErrOptionAlreadyApplied = errors.New("already applied")
 	ErrOptionInvalid  = errors.New("invalid option")
 	ErrOptionConflict = errors.New("conflicted options")
 )
 
 type TestContainerOption func(options *testContainerOptions) (err error)
 
-type privatePort = int
-type publicPort = int
+type (
+	privatePort = int
+	publicPort  = int
+)
 
 type testContainerOptions struct {
 	imageTag                    string
@@ -162,8 +165,8 @@ func WithCMD(cmd ...string) TestContainerOption {
 	return optionWrap
 }
 
-// WithRetry - customize retry operaton that checks that container started successfuly.
-// New / NewWithPool func will wait until retry operation successfuly winished or retryTimeout
+// WithRetry - customize retry operaton that checks that container started successfully.
+// New / NewWithPool func will wait until retry operation successfully winished or retryTimeout
 //
 // Example usage:
 //
@@ -183,7 +186,9 @@ func WithRetry(retryOperation RetryOperation, retryTimeout time.Duration) TestCo
 		}
 
 		options.retryOperation = retryOperation
-		options.retryTimeout = retryTimeout
+		if retryTimeout != 0 {
+			options.retryTimeout = retryTimeout
+		}
 
 		return nil
 	}
@@ -242,7 +247,6 @@ func WithExposedPorts(exposedPorts ...int) TestContainerOption {
 //
 //	WithPortBindings(map[int]int{80: 8080, 443: 8443})
 func WithPortBindings(portBindings map[privatePort]publicPort) TestContainerOption {
-
 	option := func(options *testContainerOptions) (err error) {
 		if len(portBindings) == 0 {
 			return fmt.Errorf("%w: portBindings must not be empty", ErrOptionInvalid)
@@ -254,7 +258,7 @@ func WithPortBindings(portBindings map[privatePort]publicPort) TestContainerOpti
 			dockerPort := docker.Port(fmt.Sprintf("%d/tcp", privatePort))
 			portBinding := docker.PortBinding{
 				HostIP:   "0.0.0.0",
-				HostPort: fmt.Sprintf("%d", publicPort),
+				HostPort: strconv.Itoa(publicPort),
 			}
 
 			options.portBindings[dockerPort] = append(options.portBindings[dockerPort], portBinding)
@@ -305,9 +309,10 @@ func WithAutoremove(autoremoveContainer bool) TestContainerOption {
 // Note:
 //   - Must not be used with WithRemoveContainerOnExists (ErrOptionsConflict).
 //   - You can get error if existed container have other TestContainerOptions (other port mapping or image for example).
-//   - You can set `reuseTimeout` in order to change default timeout (wait untill unpause / start existed container).
+//   - You can set `reuseTimeout` in order to change default timeout (wait until unpause / start existed container).
 //   - You can set `recreateOnError` in order to recreate container instead of error
-//     when existed container have other TestContainerOptions or failed to start container for reuse (if it was stopped/paused).
+//     when existed container have other TestContainerOptions
+//     or failed to start container for reuse (if it was stopped/paused).
 func WithReuseContainer(reuseContainer bool, reuseTimeout time.Duration, recreateOnError bool) TestContainerOption {
 	option := func(options *testContainerOptions) (err error) {
 		if !reuseContainer {
@@ -373,7 +378,9 @@ func WithRemoveContainerOnExists(removeContainerOnExists bool) TestContainerOpti
 	return optionWrap
 }
 
-func applyTestContainerOptions(repository string, customOpts ...TestContainerOption) (opts *testContainerOptions, err error) {
+func applyTestContainerOptions(repository string, customOpts ...TestContainerOption) (
+	opts *testContainerOptions, err error,
+) {
 	opts = &testContainerOptions{
 		imageTag:                    defaultImageTag,
 		containerName:               "",
