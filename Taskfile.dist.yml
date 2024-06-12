@@ -22,7 +22,7 @@ tasks:
 
   test:
     cmds: 
-      - go test -v -json -cover -race -count=1 -run=${RUN} ./... | tparse -all -follow
+      - go test -v -json -covermode=atomic -coverprofile=coverage.out -race -count=1 -run=${RUN} ./... | tparse -all -follow
 
   lint:
     cmds: 

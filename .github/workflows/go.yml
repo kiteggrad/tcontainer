@@ -27,3 +27,10 @@ jobs:
       
     - name: Test
       run: task test
+
+    - name: Upload Coverage
+      uses: codecov/codecov-action@v4
+      continue-on-error: true
+      with:
+        token: ${{ secrets.CODECOV_TOKEN }}
+        file: ./coverage.out

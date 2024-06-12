@@ -2,7 +2,7 @@
 
 [![PkgGoDev](https://pkg.go.dev/badge/github.com/kiteggrad/tcontainer)](https://pkg.go.dev/github.com/kiteggrad/tcontainer)
 [![Go Report Card](https://goreportcard.com/badge/github.com/kiteggrad/tcontainer)](https://goreportcard.com/report/github.com/kiteggrad/tcontainer)
-<!-- TODO: codecov [![codecov](https://codecov.io/gh/kiteggrad/tcontainer/branch/master/graph/badge.svg)](https://codecov.io/gh/kiteggrad/tcontainer) -->
+[![codecov](https://codecov.io/gh/kiteggrad/tcontainer/branch/master/graph/badge.svg)](https://codecov.io/gh/kiteggrad/tcontainer)
 
 Wrapper over https://github.com/ory/dockertest
 
