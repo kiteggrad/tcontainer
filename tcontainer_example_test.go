@@ -18,7 +18,7 @@ func ExampleNew() {
 
 	// define function to check the server is ready
 	url := ""
-	retry := func(_ *dockertest.Resource, apiEndpoints map[int]tcontainer.APIEndpoint) (err error) {
+	pingServerRetry := func(_ *dockertest.Resource, apiEndpoints map[int]tcontainer.APIEndpoint) (err error) {
 		url = "http://" + apiEndpoints[containerAPIPort].NetJoinHostPort()
 
 		resp, err := http.Get(url)
@@ -42,7 +42,7 @@ func ExampleNew() {
 		tcontainer.WithENV("SOME_ENV=value"),
 		tcontainer.WithCMD("sh", "-c", startServerCMD),
 		tcontainer.WithExposedPorts(containerAPIPort),
-		tcontainer.WithRetry(retry, 0),               // 0 - defailt timeout
+		tcontainer.WithRetry(pingServerRetry, 0),     // 0 - defailt timeout
 		tcontainer.WithReuseContainer(true, 0, true), // reuseContainer, reuseTimeout, recreateOnError
 		tcontainer.WithAutoremove(false),
 		tcontainer.WithExpiry(time.Minute*10),

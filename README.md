@@ -2,14 +2,14 @@
 
 [![PkgGoDev](https://pkg.go.dev/badge/github.com/kiteggrad/tcontainer)](https://pkg.go.dev/github.com/kiteggrad/tcontainer)
 [![Go Report Card](https://goreportcard.com/badge/github.com/kiteggrad/tcontainer)](https://goreportcard.com/report/github.com/kiteggrad/tcontainer)
-<!-- TODO: codecov [![codecov](https://codecov.io/gh/kiteggrad/tcontainer/branch/master/graph/badge.svg)](https://codecov.io/gh/kiteggrad/tcontainer) -->
+[![codecov](https://codecov.io/gh/kiteggrad/tcontainer/branch/master/graph/badge.svg)](https://codecov.io/gh/kiteggrad/tcontainer)
 
 Wrapper over https://github.com/ory/dockertest
 
 Provides additional conveniences for creating docker containers in tests:
 - more convenient syntax for creating containers using options
 - ability to reuse a container if it already exists `WithReuseContainer(...)`
-- ability to remove old container when creating a new one instead of getting `docker.ErrContainerAlreadyExists` error
+- ability to remove old container when creating a new one instead of getting `ErrContainerAlreadyExists` error
 - all containers are created with the label "tcontainer=tcontainer". 
   You can quickly delete all test containers using the `docker ps -aq --filter "label=tcontainer=tcontainer" | xargs docker rm -f` command.
 
@@ -36,7 +36,7 @@ func main() {
 
 	// define function to check the server is ready
 	url := ""
-	retry := func(_ *dockertest.Resource, apiEndpoints map[int]tcontainer.APIEndpoint) (err error) {
+	pingServerRetry := func(_ *dockertest.Resource, apiEndpoints map[int]tcontainer.APIEndpoint) (err error) {
 		url = "http://" + apiEndpoints[containerAPIPort].NetJoinHostPort()
 
 		resp, err := http.Get(url)
@@ -60,7 +60,7 @@ func main() {
 		tcontainer.WithENV("SOME_ENV=value"),
 		tcontainer.WithCMD("sh", "-c", startServerCMD),
 		tcontainer.WithExposedPorts(containerAPIPort),
-		tcontainer.WithRetry(retry, 0),               // 0 - defailt timeout
+		tcontainer.WithRetry(pingServerRetry, 0),     // 0 - defailt timeout
 		tcontainer.WithReuseContainer(true, 0, true), // reuseContainer, reuseTimeout, recreateOnError
 		tcontainer.WithAutoremove(false),
 		tcontainer.WithExpiry(time.Minute*10),
@@ -104,8 +104,16 @@ func main() {
 
     ```go
     tcontainer.WithContainerName("test-postgres")
-    // or
-    tcontainer.WithContainerName(t.Name()+"-pg")
+    ```
+- ### `WithContainerNameFromTest`
+    Allows you to specify custom container name by parse it from test name.
+    All invalid characters in t.Name() will be repaced to "-".
+
+    Default: docker generates a random name
+
+    ```go
+    // "Test/with/invalid/chars" -> "Test-with-invalid-chars"
+    tcontainer.WithContainerNameFromTest(t)
     ```
 - ### `WithENV`
     Allows you to pass a set of env variables to the container
@@ -133,7 +141,7 @@ func main() {
 
     ```go
     tcontainer.WithRetry(
-        func(container *dockertest.Resource, apiEndpoints map[int]tcontainer.ApiEndpoint) (err error) {
+        func(container *dockertest.Resource, apiEndpoints map[int]tcontainer.APIEndpoint) (err error) {
             return connectToDB(apiEndpoints[5432].IP, apiEndpoints[5432].Port, "user", "pass")
         },
         0, // use default retry timeout

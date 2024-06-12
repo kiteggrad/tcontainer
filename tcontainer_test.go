@@ -1,10 +1,14 @@
 package tcontainer
 
 import (
+	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,29 +21,61 @@ import (
 	"github.com/kiteggrad/freeport"
 )
 
+const containerAPIPort = 80
+
 func TestMain(m *testing.M) {
+	err := removeOldContainers()
+	if err != nil {
+		log.Fatal("failed to removeOldContainers:", err)
+	}
+
 	goleak.VerifyTestMain(m)
 }
 
-const containerAPIPort = 80
+func removeOldContainers() error {
+	dockerPool, err := dockertest.NewPool("")
+	if err != nil {
+		return fmt.Errorf("failed to dockertest.NewPool: %w", err)
+	}
+
+	oldContainers, err := dockerPool.Client.ListContainers(docker.ListContainersOptions{
+		All:     true,
+		Filters: map[string][]string{"label": {labelKeyValue + "=" + labelKeyValue}},
+	})
+	if err != nil {
+		return fmt.Errorf("failed to dockerPool.Client.ListContainers: %w", err)
+	}
+
+	mu := &sync.Mutex{}
+	wg := &sync.WaitGroup{}
+	for _, oldContainer := range oldContainers {
+		oldContainer := oldContainer
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			removeErr := dockerPool.Client.RemoveContainer(docker.RemoveContainerOptions{
+				ID:            oldContainer.ID,
+				RemoveVolumes: true,
+				Force:         true,
+			})
+			if removeErr != nil {
+				mu.Lock()
+				err = errors.Join(err, fmt.Errorf("failed to dockerPool.Client.RemoveContainer `%s`: %w", oldContainer.ID, removeErr))
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+
+	return err
+}
 
 // newBusybox - creates minimal configureated busybox container for tests.
 func newBusybox(customOpts ...TestContainerOption) (dockerPool *dockertest.Pool, container *dockertest.Resource, err error) {
 	startServerCMD := fmt.Sprintf(`echo 'Hello, World!' > /index.html && httpd -p %d -h / && tail -f /dev/null`, containerAPIPort)
 
-	retry := func(_ *dockertest.Resource, apiEndpoints map[int]APIEndpoint) (err error) {
-		endpoint := apiEndpoints[containerAPIPort]
-		resp, err := http.Get("http://" + endpoint.NetJoinHostPort())
-		if err != nil {
-			return fmt.Errorf("failed to http.Get: %w", err)
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusOK {
-			return fmt.Errorf("unexpected response status `%s`", resp.Status)
-		}
-
-		return nil
+	retry := func(container *dockertest.Resource, _ map[int]APIEndpoint) (err error) {
+		return pingBusyboxContainerServer(container)
 	}
 
 	opts := append([]TestContainerOption{
@@ -53,12 +89,403 @@ func newBusybox(customOpts ...TestContainerOption) (dockerPool *dockertest.Pool,
 		return nil, nil, fmt.Errorf("failed to New: %w", err)
 	}
 
-	container.Container, err = dockerPool.Client.InspectContainer(container.Container.ID)
+	return dockerPool, container, nil
+}
+
+// pingBusyboxContainerServer - we can use this to check that container is healthy.
+func pingBusyboxContainerServer(container *dockertest.Resource) error {
+	endpoint := GetAPIEndpoints(container)[containerAPIPort]
+
+	resp, err := http.Get("http://" + endpoint.NetJoinHostPort())
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to InspectContainer: %w", err)
+		return fmt.Errorf("failed to http.Get: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("unexpected response status `%s`", resp.Status)
 	}
 
-	return dockerPool, container, nil
+	return nil
+}
+
+func Test_applyTestContainerOptions(t *testing.T) {
+	t.Parallel()
+
+	type args struct {
+		repository string
+		customOpts []TestContainerOption
+	}
+	type want struct {
+		options *testContainerOptions
+		err     error
+	}
+	type testCase struct {
+		skip string
+		name string
+		args args
+		want want
+	}
+	type prepareTestCase func(t *testing.T) testCase
+	testCases := []prepareTestCase{
+		func(t *testing.T) testCase {
+			require := require.New(t)
+			options, err := applyTestContainerOptions("") // get defaults
+			require.NoError(err)
+			require.NotEmpty(options)
+
+			return testCase{
+				name: "without_custom_args",
+				args: args{},
+				want: want{options: options},
+			}
+		},
+		func(t *testing.T) testCase {
+			require := require.New(t)
+			options, err := applyTestContainerOptions("") // get defaults
+			require.NoError(err)
+			require.NotEmpty(options)
+
+			options.imageTag = "v1.2.3"
+
+			return testCase{
+				name: "WithImageTag",
+				args: args{customOpts: []TestContainerOption{WithImageTag(options.imageTag)}},
+				want: want{options: options},
+			}
+		},
+		func(_ *testing.T) testCase {
+			return testCase{
+				name: "WithImageTag_empty",
+				args: args{customOpts: []TestContainerOption{WithImageTag("")}},
+				want: want{err: ErrOptionInvalid},
+			}
+		},
+		func(t *testing.T) testCase {
+			require := require.New(t)
+			options, err := applyTestContainerOptions("") // get defaults
+			require.NoError(err)
+			require.NotEmpty(options)
+
+			options.containerName = "SomeContainerName"
+
+			return testCase{
+				name: "WithContainerName",
+				args: args{customOpts: []TestContainerOption{WithContainerName(options.containerName)}},
+				want: want{options: options},
+			}
+		},
+		func(_ *testing.T) testCase {
+			return testCase{
+				name: "WithContainerName_empty",
+				args: args{customOpts: []TestContainerOption{WithContainerName("")}},
+				want: want{err: ErrOptionInvalid},
+			}
+		},
+		func(t *testing.T) testCase {
+			require := require.New(t)
+			options, err := applyTestContainerOptions("") // get defaults
+			require.NoError(err)
+			require.NotEmpty(options)
+
+			options.containerName = strings.ReplaceAll(t.Name(), "/", "-")
+
+			return testCase{
+				name: "WithContainerNameFromTest",
+				args: args{customOpts: []TestContainerOption{WithContainerNameFromTest(t)}},
+				want: want{options: options},
+			}
+		},
+		func(_ *testing.T) testCase {
+			return testCase{
+				name: "WithContainerNameFromTest_empty",
+				args: args{customOpts: []TestContainerOption{WithContainerNameFromTest(nil)}},
+				want: want{err: ErrOptionInvalid},
+			}
+		},
+		func(t *testing.T) testCase {
+			require := require.New(t)
+			options, err := applyTestContainerOptions("") // get defaults
+			require.NoError(err)
+			require.NotEmpty(options)
+
+			options.env = []string{"SOME_ENV=some_val"}
+
+			return testCase{
+				name: "WithENV",
+				args: args{customOpts: []TestContainerOption{WithENV(options.env...)}},
+				want: want{options: options},
+			}
+		},
+		func(_ *testing.T) testCase {
+			return testCase{
+				name: "WithENV_empty",
+				args: args{customOpts: []TestContainerOption{WithENV()}},
+				want: want{err: ErrOptionInvalid},
+			}
+		},
+		func(_ *testing.T) testCase {
+			return testCase{
+				name: "WithENV_empty_string",
+				args: args{customOpts: []TestContainerOption{WithENV("")}},
+				want: want{err: ErrOptionInvalid},
+			}
+		},
+		func(_ *testing.T) testCase {
+			return testCase{
+				name: "WithENV_invalid_format",
+				args: args{customOpts: []TestContainerOption{WithENV("kek")}},
+				want: want{err: ErrOptionInvalid},
+			}
+		},
+		func(t *testing.T) testCase {
+			require := require.New(t)
+			options, err := applyTestContainerOptions("") // get defaults
+			require.NoError(err)
+			require.NotEmpty(options)
+
+			options.cmd = []string{"server", "start"}
+
+			return testCase{
+				name: "WithCMD",
+				args: args{customOpts: []TestContainerOption{WithCMD(options.cmd...)}},
+				want: want{options: options},
+			}
+		},
+		func(_ *testing.T) testCase {
+			return testCase{
+				name: "WithCMD_empty",
+				args: args{customOpts: []TestContainerOption{WithCMD()}},
+				want: want{err: ErrOptionInvalid},
+			}
+		},
+		func(t *testing.T) testCase {
+			require := require.New(t)
+			options, err := applyTestContainerOptions("") // get defaults
+			require.NoError(err)
+			require.NotEmpty(options)
+
+			options.retryOperation = func(_ *dockertest.Resource, _ map[int]APIEndpoint) (_ error) { return nil }
+			options.retryTimeout = 123
+
+			return testCase{
+				skip: "deepEqual always returns false for functions",
+				name: "WithRetry",
+				args: args{customOpts: []TestContainerOption{WithRetry(options.retryOperation, options.retryTimeout)}},
+				want: want{options: options},
+			}
+		},
+		func(_ *testing.T) testCase {
+			return testCase{
+				name: "WithRetry_empty",
+				args: args{customOpts: []TestContainerOption{WithRetry(nil, 123)}},
+				want: want{err: ErrOptionInvalid},
+			}
+		},
+		func(t *testing.T) testCase {
+			require := require.New(t)
+			options, err := applyTestContainerOptions("") // get defaults
+			require.NoError(err)
+			require.NotEmpty(options)
+
+			options.retryOperation = func(_ *dockertest.Resource, _ map[int]APIEndpoint) (_ error) { return nil }
+
+			return testCase{
+				name: "WithRetry_negative_timeout",
+				args: args{customOpts: []TestContainerOption{WithRetry(options.retryOperation, -123)}},
+				want: want{err: ErrOptionInvalid},
+			}
+		},
+		func(t *testing.T) testCase {
+			require := require.New(t)
+			options, err := applyTestContainerOptions("") // get defaults
+			require.NoError(err)
+			require.NotEmpty(options)
+
+			options.exposedPorts = []string{"8080/tcp", "8081/tcp"}
+
+			return testCase{
+				name: "WithExposedPorts",
+				args: args{customOpts: []TestContainerOption{WithExposedPorts(8080, 8081)}},
+				want: want{options: options},
+			}
+		},
+		func(_ *testing.T) testCase {
+			return testCase{
+				name: "WithExposedPorts_empty",
+				args: args{customOpts: []TestContainerOption{WithExposedPorts()}},
+				want: want{err: ErrOptionInvalid},
+			}
+		},
+		func(_ *testing.T) testCase {
+			return testCase{
+				name: "WithExposedPorts_negative_port",
+				args: args{customOpts: []TestContainerOption{WithExposedPorts(-123)}},
+				want: want{err: ErrOptionInvalid},
+			}
+		},
+		func(t *testing.T) testCase {
+			require := require.New(t)
+			options, err := applyTestContainerOptions("") // get defaults
+			require.NoError(err)
+			require.NotEmpty(options)
+
+			options.portBindings = map[docker.Port][]docker.PortBinding{
+				"80/tcp": {{HostIP: "0.0.0.0", HostPort: "8080"}},
+				"82/tcp": {{HostIP: "0.0.0.0", HostPort: "8082"}},
+			}
+
+			return testCase{
+				name: "WithPortBindings",
+				args: args{customOpts: []TestContainerOption{WithPortBindings(map[int]int{80: 8080, 82: 8082})}},
+				want: want{options: options},
+			}
+		},
+		func(_ *testing.T) testCase {
+			return testCase{
+				name: "WithPortBindings_empty",
+				args: args{customOpts: []TestContainerOption{WithPortBindings(nil)}},
+				want: want{err: ErrOptionInvalid},
+			}
+		},
+		func(t *testing.T) testCase {
+			require := require.New(t)
+			options, err := applyTestContainerOptions("") // get defaults
+			require.NoError(err)
+			require.NotEmpty(options)
+
+			options.containerExpiry = 123
+
+			return testCase{
+				name: "WithExpiry",
+				args: args{customOpts: []TestContainerOption{WithExpiry(options.containerExpiry)}},
+				want: want{options: options},
+			}
+		},
+		func(t *testing.T) testCase {
+			require := require.New(t)
+			options, err := applyTestContainerOptions("") // get defaults
+			require.NoError(err)
+			require.NotEmpty(options)
+
+			options.containerExpiry = 0
+
+			return testCase{
+				name: "WithExpiry_empty",
+				args: args{customOpts: []TestContainerOption{WithExpiry(options.containerExpiry)}},
+				want: want{options: options},
+			}
+		},
+		func(t *testing.T) testCase {
+			require := require.New(t)
+			options, err := applyTestContainerOptions("") // get defaults
+			require.NoError(err)
+			require.NotEmpty(options)
+
+			options.autoremoveContainer = true
+
+			return testCase{
+				name: "WithAutoremove",
+				args: args{customOpts: []TestContainerOption{WithAutoremove(options.autoremoveContainer)}},
+				want: want{options: options},
+			}
+		},
+		func(t *testing.T) testCase {
+			require := require.New(t)
+			options, err := applyTestContainerOptions("") // get defaults
+			require.NoError(err)
+			require.NotEmpty(options)
+
+			options.autoremoveContainer = false
+
+			return testCase{
+				name: "WithAutoremove_false",
+				args: args{customOpts: []TestContainerOption{WithAutoremove(options.autoremoveContainer)}},
+				want: want{options: options},
+			}
+		},
+		func(t *testing.T) testCase {
+			require := require.New(t)
+			options, err := applyTestContainerOptions("") // get defaults
+			require.NoError(err)
+			require.NotEmpty(options)
+
+			options.reuseContainer = true
+			options.reuseContainerTimeout = time.Second
+			options.reuseContainerRecreateOnErr = true
+
+			return testCase{
+				name: "WithReuseContainer",
+				args: args{customOpts: []TestContainerOption{WithReuseContainer(true, time.Second, true)}},
+				want: want{options: options},
+			}
+		},
+		func(_ *testing.T) testCase {
+			return testCase{
+				// we need this case because of backoff initial timeout is second
+				name: "WithReuseContainer_too_small_timout",
+				args: args{customOpts: []TestContainerOption{WithReuseContainer(true, 1, true)}},
+				want: want{err: ErrOptionInvalid},
+			}
+		},
+		func(_ *testing.T) testCase {
+			return testCase{
+				name: "WithReuseContainer_WithRemoveContainerOnExists_conflict",
+				args: args{customOpts: []TestContainerOption{WithRemoveContainerOnExists(true), WithReuseContainer(true, time.Second, true)}},
+				want: want{err: ErrOptionConflict},
+			}
+		},
+		func(t *testing.T) testCase {
+			require := require.New(t)
+			options, err := applyTestContainerOptions("") // get defaults
+			require.NoError(err)
+			require.NotEmpty(options)
+
+			options.removeContainerOnExists = true
+
+			return testCase{
+				name: "WithRemoveContainerOnExists",
+				args: args{customOpts: []TestContainerOption{WithRemoveContainerOnExists(options.removeContainerOnExists)}},
+				want: want{options: options},
+			}
+		},
+		func(t *testing.T) testCase {
+			require := require.New(t)
+			options, err := applyTestContainerOptions("") // get defaults
+			require.NoError(err)
+			require.NotEmpty(options)
+
+			options.removeContainerOnExists = false
+
+			return testCase{
+				name: "WithRemoveContainerOnExists_false",
+				args: args{customOpts: []TestContainerOption{WithRemoveContainerOnExists(options.removeContainerOnExists)}},
+				want: want{options: options},
+			}
+		},
+		func(_ *testing.T) testCase {
+			return testCase{
+				name: "WithRemoveContainerOnExists_WithReuseContainer_conflict",
+				args: args{customOpts: []TestContainerOption{WithReuseContainer(true, time.Second, true), WithRemoveContainerOnExists(true)}},
+				want: want{err: ErrOptionConflict},
+			}
+		},
+	}
+	for _, prepareTestCase := range testCases {
+		prepareTestCase := prepareTestCase
+		t.Run(prepareTestCase(t).name, func(t *testing.T) {
+			t.Parallel()
+			test := prepareTestCase(t)
+			if test.skip != "" {
+				t.Skip()
+			}
+			require := require.New(t)
+
+			options, err := applyTestContainerOptions(test.args.repository, test.args.customOpts...)
+			require.ErrorIs(err, test.want.err, err)
+			require.Equal(test.want.options, options)
+		})
+	}
 }
 
 func Test_New_Simple(t *testing.T) {
@@ -116,9 +543,15 @@ func Test_New_WithENV(t *testing.T) {
 	require.Contains(container.Container.Config.Env, env)
 }
 
-// already tested by newBusybox
-// test WithCMD(cmd ...string)
-// test WithExposedPorts(exposedPorts ...int)
+func Test_New_WithCMD(t *testing.T) {
+	t.Parallel()
+	t.Skip("already tested by newBusybox")
+}
+
+func Test_New_WithExposedPorts(t *testing.T) {
+	t.Parallel()
+	t.Skip("already tested by newBusybox")
+}
 
 func Test_New_WithPortBindings(t *testing.T) {
 	t.Parallel()
@@ -226,7 +659,8 @@ func Test_New_WithStartTimeout(t *testing.T) {
 				),
 			)
 			_ = pool
-			if test.want.err == nil {
+			errNoSuchContainer := &docker.NoSuchContainer{}
+			if test.want.err == nil && !errors.As(err, &errNoSuchContainer) {
 				t.Cleanup(func() { assert.NoError(container.Close()) })
 			}
 			require.ErrorIs(err, test.want.err, err)
@@ -321,23 +755,109 @@ func Test_New_WithReuseContainer_false(t *testing.T) {
 	t.Cleanup(func() { assert.NoError(container.Close()) })
 
 	_, _, err = newBusybox(WithContainerName(containerName), WithReuseContainer(false, 0, false))
-	require.ErrorIs(err, docker.ErrContainerAlreadyExists)
+	require.ErrorIs(err, ErrContainerAlreadyExists)
 }
 
-// TODO: tests for diffrerent container statuses - restarting, oom, ...
 func Test_New_WithReuseContainer_true(t *testing.T) {
 	t.Parallel()
-	require := require.New(t)
-	assert := assert.New(t)
 
-	containerName := t.Name()
+	type testCase struct {
+		skip                string `exhaustruct:"optional"`
+		name                string
+		invalidateContainer func(require *require.Assertions, dockerPool *dockertest.Pool, container *dockertest.Resource)
+	}
+	testCases := []testCase{
+		{
+			name: "Running",
+			invalidateContainer: func(require *require.Assertions, dockerPool *dockertest.Pool, container *dockertest.Resource) {
+				dcontainer, err := dockerPool.Client.InspectContainer(container.Container.ID)
+				require.NoError(err)
+				require.True(dcontainer.State.Running)
+			},
+		},
+		{
+			name: "Paused",
+			invalidateContainer: func(require *require.Assertions, dockerPool *dockertest.Pool, container *dockertest.Resource) {
+				require.NoError(dockerPool.Client.PauseContainer(container.Container.ID))
+				dcontainer, err := dockerPool.Client.InspectContainer(container.Container.ID)
+				require.NoError(err)
+				require.True(dcontainer.State.Paused)
+			},
+		},
+		{
+			name: "Exited",
+			invalidateContainer: func(require *require.Assertions, dockerPool *dockertest.Pool, container *dockertest.Resource) {
+				require.NoError(dockerPool.Client.KillContainer(docker.KillContainerOptions{ID: container.Container.ID, Signal: docker.SIGKILL}))
+				dcontainer, err := dockerPool.Client.InspectContainer(container.Container.ID)
+				require.NoError(err)
+				require.Equal("exited", dcontainer.State.Status)
+			},
+		},
+		{
+			name: "Restarting",
+			skip: "i don't know how to write stable test for this case",
+			invalidateContainer: func(require *require.Assertions, dockerPool *dockertest.Pool, container *dockertest.Resource) {
+				require.NoError(dockerPool.Client.RestartContainer(container.Container.ID, 0))
+				dcontainer, err := dockerPool.Client.InspectContainer(container.Container.ID)
+				require.NoError(err)
+				require.True(dcontainer.State.Restarting)
+			},
+		},
+		{
+			name: "OOMKilled",
+			skip: "i don't know how to write stable test for this case",
+			invalidateContainer: func(require *require.Assertions, dockerPool *dockertest.Pool, container *dockertest.Resource) {
+				dcontainer, err := dockerPool.Client.InspectContainer(container.Container.ID)
+				require.NoError(err)
+				require.True(dcontainer.State.OOMKilled)
+			},
+		},
+		{
+			name: "Dead",
+			skip: "i don't know how to write stable test for this case",
+			invalidateContainer: func(require *require.Assertions, dockerPool *dockertest.Pool, container *dockertest.Resource) {
+				dcontainer, err := dockerPool.Client.InspectContainer(container.Container.ID)
+				require.NoError(err)
+				require.True(dcontainer.State.Dead)
+			},
+		},
+		{
+			name: "RemovalInProgress",
+			skip: "i don't know how to write stable test for this case",
+			invalidateContainer: func(require *require.Assertions, dockerPool *dockertest.Pool, container *dockertest.Resource) {
+				dcontainer, err := dockerPool.Client.InspectContainer(container.Container.ID)
+				require.NoError(err)
+				require.True(dcontainer.State.RemovalInProgress)
+			},
+		},
+	}
+	for _, test := range testCases {
+		test := test
 
-	_, container, err := newBusybox(WithContainerName(containerName))
-	require.NoError(err)
-	t.Cleanup(func() { assert.NoError(container.Close()) })
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if test.skip != "" {
+				t.Skip(test.skip)
+			}
+			require := require.New(t)
+			assert := assert.New(t)
 
-	_, container, err = newBusybox(WithContainerName(containerName), WithReuseContainer(true, 0, false))
-	require.NoError(err)
+			// create container
+			dockerPool, container, err := newBusybox(WithContainerNameFromTest(t), WithAutoremove(false))
+			require.NoError(err)
+			t.Cleanup(func() { assert.NoError(container.Close()) })
+			containerIDSrc := container.Container.ID
+
+			// invalidate container is it's needed for get different states like "paused"
+			test.invalidateContainer(require, dockerPool, container)
+
+			// try reuse container
+			_, container, err = newBusybox(WithContainerNameFromTest(t), WithReuseContainer(true, 0, false))
+			require.NoError(err)
+			require.Equal(containerIDSrc, container.Container.ID)  // check we reuse the container
+			require.NoError(pingBusyboxContainerServer(container)) // check container is ok
+		})
+	}
 }
 
 func Test_New_WithReuseContainer_recreateOnError(t *testing.T) {
@@ -384,4 +904,132 @@ func Test_New_WithRemoveContainerOnExists(t *testing.T) {
 	newContainerID := container.Container.ID
 	assert.NotEmpty(newContainerID)
 	require.NotEqual(oldContainerID, newContainerID)
+}
+
+func Test_checkContainerConfig(t *testing.T) {
+	t.Parallel()
+
+	type args struct {
+		oldContainerOptions []TestContainerOption
+		newContainerOptions []TestContainerOption
+	}
+	tests := []struct {
+		skip string
+		name string
+		args args
+		err  error
+	}{
+		{
+			name: "equal",
+			args: args{
+				oldContainerOptions: []TestContainerOption{},
+				newContainerOptions: []TestContainerOption{},
+			},
+			err: nil,
+		},
+		{
+			name: "image_tag_not_equal",
+			args: args{
+				oldContainerOptions: []TestContainerOption{WithImageTag("latest")},
+				newContainerOptions: []TestContainerOption{WithImageTag("1.36")},
+			},
+			err: ErrReuseContainerConflict,
+		},
+		{
+			name: "image_not_equal",
+			args: args{
+				oldContainerOptions: []TestContainerOption{WithImageTag("latest")},
+				newContainerOptions: []TestContainerOption{WithImageTag("latest"), func(options *testContainerOptions) (err error) {
+					options.repository = "httpd"
+					return nil
+				}},
+			},
+			err: ErrReuseContainerConflict,
+		},
+		{
+			skip: "could be ok",
+			name: "env_not_equal",
+			args: args{
+				oldContainerOptions: []TestContainerOption{},
+				newContainerOptions: []TestContainerOption{WithENV("NEQ=neq")},
+			},
+			err: ErrReuseContainerConflict,
+		},
+		{
+			skip: "could be ok",
+			name: "cmd_not_equal",
+			args: args{
+				oldContainerOptions: []TestContainerOption{},
+				newContainerOptions: []TestContainerOption{WithCMD("neq")},
+			},
+			err: ErrReuseContainerConflict,
+		},
+		{
+			name: "exposedPorts_not_equal",
+			args: args{
+				oldContainerOptions: []TestContainerOption{},
+				newContainerOptions: []TestContainerOption{WithExposedPorts(9999)},
+			},
+			err: ErrReuseContainerConflict,
+		},
+		{
+			name: "portBindings_equal",
+			args: args{
+				oldContainerOptions: []TestContainerOption{WithPortBindings(
+					map[int]int{9999: 9999},
+				)},
+				newContainerOptions: []TestContainerOption{WithPortBindings(
+					map[int]int{9999: 9999},
+				)},
+			},
+			err: nil,
+		},
+		{
+			name: "portBindings_not_equal_port",
+			args: args{
+				oldContainerOptions: []TestContainerOption{},
+				newContainerOptions: []TestContainerOption{WithPortBindings(
+					map[int]int{9999: 9999},
+				)},
+			},
+			err: ErrReuseContainerConflict,
+		},
+		{
+			name: "portBindings_not_equal_port_binding",
+			args: args{
+				oldContainerOptions: []TestContainerOption{WithPortBindings(
+					map[int]int{9999: 9998},
+				)},
+				newContainerOptions: []TestContainerOption{WithPortBindings(
+					map[int]int{9999: 9999},
+				)},
+			},
+			err: ErrReuseContainerConflict,
+		},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if tt.skip != "" {
+				t.Skip(tt.skip)
+			}
+			require := require.New(t)
+			assert := assert.New(t)
+
+			tt.args.oldContainerOptions = append(
+				[]TestContainerOption{WithContainerNameFromTest(t)},
+				tt.args.oldContainerOptions...)
+			_, oldContainer, err := newBusybox(tt.args.oldContainerOptions...)
+			require.NoError(err)
+			t.Cleanup(func() { assert.NoError(oldContainer.Close()) })
+
+			tt.args.newContainerOptions = append(
+				[]TestContainerOption{WithContainerNameFromTest(t), WithReuseContainer(true, 0, false)},
+				tt.args.newContainerOptions...)
+			_, _, err = newBusybox(tt.args.newContainerOptions...)
+			require.ErrorIs(err, tt.err)
+		})
+	}
 }

@@ -96,7 +96,7 @@ linters:
     - testableexamples
     - testifylint
     # - testpackage
-    - thelper
+    # - thelper
     - tparallel
     - unconvert
     - unparam
@@ -127,6 +127,9 @@ issues:
         - lll
         - funlen
         - gosec
+        - exhaustruct
+        - maintidx
+        - varnamelen
 
 run:
   timeout: 5m
