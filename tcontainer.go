@@ -18,9 +18,22 @@ const (
 	macOSName      = "darwin"
 	linuxLocalhost = "localhost"
 	linuxOSName    = "linux"
+
+	labelKeyValue = "tcontainer"
 )
 
-var ErrRetryTimeout = errors.New("retry timeout")
+var (
+	// ErrContainerAlreadyExists - occurs when the container already exists.
+	ErrContainerAlreadyExists = docker.ErrContainerAlreadyExists
+	// ErrRetryTimeout - occurs when RetryOperation returns errors too long (see retryTimeout in WithRetry()).
+	ErrRetryTimeout = errors.New("retry timeout")
+	// ErrUnreusableState - occurs when it's impossible to reuse container (see WithReuseContainer()).
+	ErrUnreusableState = errors.New("imposible to reuse container with it's current state")
+	// ErrReuseContainerConflict - occurs when existed container have different options (e.q. image tag).
+	ErrReuseContainerConflict = errors.New("imposible to reuse container, it has differnent options")
+
+	errRepositoryIsRequired = errors.New("repository is required")
+)
 
 // Endpoint that you can use to connect to the container.
 //
@@ -32,17 +45,19 @@ type APIEndpoint struct {
 	Port int    // publicPort or private port
 }
 
+// PortStr - get port as string.
 func (e APIEndpoint) PortStr() string {
 	return strconv.Itoa(e.Port)
 }
 
+// NetJoinHostPort - combines ip and port into a network address of the form "host:port".
 func (e APIEndpoint) NetJoinHostPort() string {
 	return net.JoinHostPort(e.IP, e.PortStr())
 }
 
 // RetryOperation is an exponential backoff retry operation. You can use it to wait for e.g. mysql to boot up.
 //
-// `apiEndpoints` is map that provides you ApiEndpoint by each privatePort (port inside the container).
+// `apiEndpoints` is map that provides you APIEndpoint by each privatePort (port inside the container).
 type RetryOperation func(container *dockertest.Resource, apiEndpoints map[int]APIEndpoint) (err error)
 
 // New - creates a new test container.
@@ -78,18 +93,17 @@ func NewWithPool(
 		return nil, fmt.Errorf("failed to applyTestContainerOptions: %w", err)
 	}
 
-	return newWithPool(dockerPool, repository, options)
+	return newWithPool(dockerPool, options)
 }
 
 func newWithPool(
 	dockerPool *dockertest.Pool,
-	repository string,
 	options *testContainerOptions,
 ) (
 	container *dockertest.Resource,
 	err error,
 ) {
-	container, err = initContainer(dockerPool, repository, options)
+	container, err = initContainer(dockerPool, options)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initContainer: %w", err)
 	}
@@ -102,7 +116,7 @@ func newWithPool(
 		}
 	}
 
-	apiEndpoints := getAPIEndpoints(container)
+	apiEndpoints := GetAPIEndpoints(container)
 
 	if options.retryOperation != nil {
 		retryBackoff := backoff.NewExponentialBackOff()
@@ -122,24 +136,28 @@ func newWithPool(
 	return container, nil
 }
 
-func initContainer(dockerPool *dockertest.Pool, repository string, options *testContainerOptions) (
+func initContainer(dockerPool *dockertest.Pool, options *testContainerOptions) (
 	container *dockertest.Resource, err error,
 ) {
-	container, err = createAndStartContainer(dockerPool, repository, options)
+	if options.repository == "" {
+		return nil, errRepositoryIsRequired
+	}
+
+	container, err = createAndStartContainer(dockerPool, options)
 	switch {
 	case err == nil:
 		return container, nil
 
-	case errors.Is(err, docker.ErrContainerAlreadyExists) && options.reuseContainer:
-		container, err = reuseOrRecreateContainer(dockerPool, repository, options)
+	case errors.Is(err, ErrContainerAlreadyExists) && options.reuseContainer:
+		container, err = reuseOrRecreateContainer(dockerPool, options)
 		if err != nil {
 			return nil, fmt.Errorf("failed to reuseOrRecreateContainer: %w", err)
 		}
 
 		return container, nil
 
-	case errors.Is(err, docker.ErrContainerAlreadyExists) && options.removeContainerOnExists:
-		container, err := recreateContainer(dockerPool, repository, options)
+	case errors.Is(err, ErrContainerAlreadyExists) && options.removeContainerOnExists:
+		container, err := recreateContainer(dockerPool, options)
 		if err != nil {
 			return nil, fmt.Errorf("failed to recreateContainer by removeContainerOnExists: %w", err)
 		}
@@ -151,7 +169,7 @@ func initContainer(dockerPool *dockertest.Pool, repository string, options *test
 	}
 }
 
-func createAndStartContainer(dockerPool *dockertest.Pool, repository string, options *testContainerOptions) (
+func createAndStartContainer(dockerPool *dockertest.Pool, options *testContainerOptions) (
 	container *dockertest.Resource, err error,
 ) {
 	var auth docker.AuthConfiguration
@@ -160,7 +178,7 @@ func createAndStartContainer(dockerPool *dockertest.Pool, repository string, opt
 	container, err = dockerPool.RunWithOptions(&dockertest.RunOptions{
 		Hostname:     "",
 		Name:         options.containerName,
-		Repository:   repository,
+		Repository:   options.repository,
 		Tag:          options.imageTag,
 		Env:          options.env,
 		Entrypoint:   nil,
@@ -194,7 +212,7 @@ func createAndStartContainer(dockerPool *dockertest.Pool, repository string, opt
 }
 
 // reuseOrRecreateContainer - try to reuse container, or recreate (optional) if failed to reuse.
-func reuseOrRecreateContainer(dockerPool *dockertest.Pool, repository string, options *testContainerOptions) (
+func reuseOrRecreateContainer(dockerPool *dockertest.Pool, options *testContainerOptions) (
 	container *dockertest.Resource, err error,
 ) {
 	container, err = reuseContainer(dockerPool, options)
@@ -205,7 +223,7 @@ func reuseOrRecreateContainer(dockerPool *dockertest.Pool, repository string, op
 	case options.reuseContainerRecreateOnErr:
 		err = fmt.Errorf("failed to reuseContainer: %w", err)
 
-		container, recreateErr := recreateContainer(dockerPool, repository, options)
+		container, recreateErr := recreateContainer(dockerPool, options)
 		if recreateErr != nil {
 			recreateErr = fmt.Errorf("failed to recreateContainer after reuseContainer err: %w", err)
 			return nil, errors.Join(err, recreateErr)
@@ -225,7 +243,7 @@ func reuseContainer(dockerPool *dockertest.Pool, options *testContainerOptions) 
 		var ok bool
 		container, ok = dockerPool.ContainerByName(fmt.Sprintf("^%s$", options.containerName))
 		if !ok {
-			return fmt.Errorf("failed to dockerPool.ContainerByName `%s`: %w", options.containerName, err)
+			return backoff.Permanent(fmt.Errorf("failed to dockerPool.ContainerByName `%s`: %w", options.containerName, err))
 		}
 
 		err = checkContainerState(container.Container)
@@ -233,7 +251,7 @@ func reuseContainer(dockerPool *dockertest.Pool, options *testContainerOptions) 
 			return fmt.Errorf("failed to checkContainerState: %w", err)
 		}
 
-		err = checkContainerConfig(container, options)
+		err = checkContainerConfig(container.Container, options)
 		if err != nil {
 			return backoff.Permanent(fmt.Errorf("failed to checkContainerConfig: %w", err))
 		}
@@ -284,10 +302,8 @@ func repairForReuse(client *docker.Client, container *docker.Container) (err err
 			return fmt.Errorf("failed to StartContainer on `exited` status: %w", err)
 		}
 
-	// TODO: implement and test other states
-	// case container.State.OOMKilled:
-	// case container.State.RemovalInProgress:
-	// case container.State.Dead:
+	case container.State.OOMKilled, container.State.Dead, container.State.RemovalInProgress:
+		return backoff.Permanent(fmt.Errorf("%w: `%s`", ErrUnreusableState, container.State.String())) //nolint:wrapcheck
 
 	default:
 		return fmt.Errorf("unexpected Container.State `%s`", container.State.StateString())
@@ -311,33 +327,57 @@ func checkContainerState(container *docker.Container) (err error) {
 	case container.State.Running:
 		return nil
 
-	// TODO: implement and test other states
-	// case container.State.OOMKilled:
-	// case container.State.RemovalInProgress:
-	// case container.State.Dead:
+	case container.State.OOMKilled, container.State.Dead, container.State.RemovalInProgress:
+		return backoff.Permanent(fmt.Errorf("%w: %s", ErrUnreusableState, container.State.String())) //nolint:wrapcheck
 
 	default:
 		return fmt.Errorf("unexpected Container.State `%s`", container.State.StateString())
 	}
 }
 
-func checkContainerConfig(container *dockertest.Resource, expectedOptions *testContainerOptions) (err error) {
+func checkContainerConfig(container *docker.Container, expectedOptions *testContainerOptions) (err error) {
 	// image check
 	expectImage := expectedOptions.repository + ":" + expectedOptions.imageTag
-	if container.Container.Config.Image != expectImage {
+	if container.Config.Image != expectImage {
 		return fmt.Errorf(
-			"old container have other image - `%s` instead of `%s`",
-			container.Container.Config.Image, expectImage,
+			"%w: other image - `%s` (old) instead of `%s` (new)",
+			ErrReuseContainerConflict, container.Config.Image, expectImage,
 		)
 	}
 
 	// exposed ports check
 	for _, exposedPort := range expectedOptions.exposedPorts {
-		_, ok := container.Container.Config.ExposedPorts[docker.Port(exposedPort)]
+		_, ok := container.Config.ExposedPorts[docker.Port(exposedPort)]
 		if !ok {
 			return fmt.Errorf(
-				"old container doesn't have exposed port `%s`", exposedPort,
+				"%w: old container doesn't have exposed port `%s`", ErrReuseContainerConflict, exposedPort,
 			)
+		}
+	}
+
+	// port bindings check
+	for port, bindings := range expectedOptions.portBindings {
+		oldBindings, ok := container.HostConfig.PortBindings[port]
+		if !ok {
+			return fmt.Errorf(
+				"%w: old container doesn't have binding for port `%s`", ErrReuseContainerConflict, port,
+			)
+		}
+
+		for _, binding := range bindings {
+			found := false
+			for _, oldBinding := range oldBindings {
+				found = oldBinding == binding
+				if found {
+					break
+				}
+			}
+			if !found {
+				return fmt.Errorf(
+					"%w: old container doesn't port binding `%#+v` for port `%s`",
+					ErrReuseContainerConflict, binding, port,
+				)
+			}
 		}
 	}
 
@@ -347,7 +387,7 @@ func checkContainerConfig(container *dockertest.Resource, expectedOptions *testC
 	return nil
 }
 
-func recreateContainer(dockerPool *dockertest.Pool, repository string, options *testContainerOptions) (
+func recreateContainer(dockerPool *dockertest.Pool, options *testContainerOptions) (
 	container *dockertest.Resource, err error,
 ) {
 	err = dockerPool.RemoveContainerByName(fmt.Sprintf("^%s$", options.containerName))
@@ -355,7 +395,7 @@ func recreateContainer(dockerPool *dockertest.Pool, repository string, options *
 		return nil, fmt.Errorf("failed to dockerPool.RemoveContainerByName: %w", err)
 	}
 
-	container, err = createAndStartContainer(dockerPool, repository, options)
+	container, err = createAndStartContainer(dockerPool, options)
 	if err != nil {
 		return nil, fmt.Errorf("failed to createAndStartContainer: %w", err)
 	}
@@ -363,7 +403,8 @@ func recreateContainer(dockerPool *dockertest.Pool, repository string, options *
 	return container, nil
 }
 
-func getAPIEndpoints(container *dockertest.Resource) (endpointByPrivatePort map[int]APIEndpoint) {
+// GetAPIEndpoints - provides you APIEndpoint by each privatePort (port inside the container).
+func GetAPIEndpoints(container *dockertest.Resource) (endpointByPrivatePort map[int]APIEndpoint) {
 	mapping := container.Container.NetworkSettings.PortMappingAPI()
 	endpointByPrivatePort = make(map[int]APIEndpoint, len(mapping))
 
