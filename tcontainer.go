@@ -1,11 +1,13 @@
 package tcontainer
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
 	"runtime"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/cenkalti/backoff/v4"
@@ -18,8 +20,6 @@ const (
 	macOSName      = "darwin"
 	linuxLocalhost = "localhost"
 	linuxOSName    = "linux"
-
-	labelKeyValue = "tcontainer"
 )
 
 var (
@@ -94,6 +94,51 @@ func NewWithPool(
 	}
 
 	return newWithPool(dockerPool, options)
+}
+
+// RemoveAll - remove all containers created by this package.
+func RemoveAll(ctx context.Context) (err error) {
+	dockerPool, err := dockertest.NewPool("")
+	if err != nil {
+		return fmt.Errorf("failed to dockertest.NewPool: %w", err)
+	}
+
+	containers, err := dockerPool.Client.ListContainers(docker.ListContainersOptions{
+		All:     true,
+		Size:    false,
+		Limit:   0,
+		Since:   "",
+		Before:  "",
+		Filters: map[string][]string{"label": {defaultLabelKeyValue + "=" + defaultLabelKeyValue}},
+		Context: ctx,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to dockerPool.Client.ListContainers: %w", err)
+	}
+
+	mu := &sync.Mutex{}     //nolint:varnamelen
+	wg := &sync.WaitGroup{} //nolint:varnamelen
+	for _, container := range containers {
+		container := container
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			removeErr := dockerPool.Client.RemoveContainer(docker.RemoveContainerOptions{
+				ID:            container.ID,
+				RemoveVolumes: true,
+				Force:         true,
+				Context:       ctx,
+			})
+			if removeErr != nil {
+				mu.Lock()
+				err = errors.Join(err, fmt.Errorf("failed to dockerPool.Client.RemoveContainer `%s`: %w", container.ID, removeErr))
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+
+	return nil
 }
 
 func newWithPool(
@@ -172,38 +217,8 @@ func initContainer(dockerPool *dockertest.Pool, options *testContainerOptions) (
 func createAndStartContainer(dockerPool *dockertest.Pool, options *testContainerOptions) (
 	container *dockertest.Resource, err error,
 ) {
-	var auth docker.AuthConfiguration
-
-	// TODO: add aptions for all
-	container, err = dockerPool.RunWithOptions(&dockertest.RunOptions{
-		Hostname:     "",
-		Name:         options.containerName,
-		Repository:   options.repository,
-		Tag:          options.imageTag,
-		Env:          options.env,
-		Entrypoint:   nil,
-		Cmd:          options.cmd,
-		Mounts:       nil,
-		Links:        nil,
-		ExposedPorts: options.exposedPorts,
-		ExtraHosts:   nil,
-		CapAdd:       nil,
-		SecurityOpt:  nil,
-		DNS:          nil,
-		WorkingDir:   "",
-		NetworkID:    "",
-		Networks:     nil,
-		Labels:       map[string]string{"tcontainer": "tcontainer"},
-		Auth:         auth,
-		PortBindings: options.portBindings,
-		Privileged:   false,
-		User:         "",
-		Tty:          false,
-		Platform:     "linux/" + runtime.GOARCH,
-	}, func(config *docker.HostConfig) {
-		config.AutoRemove = options.autoremoveContainer
-		config.RestartPolicy = docker.RestartPolicy{Name: "no", MaximumRetryCount: 0}
-	})
+	runOpts, hostConfigOpts := options.convertToDockertest()
+	container, err = dockerPool.RunWithOptions(runOpts, hostConfigOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to dockerPool.RunWithOptions: %w", err)
 	}

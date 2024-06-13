@@ -4,11 +4,13 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/ory/dockertest/v3"
 	"github.com/ory/dockertest/v3/docker"
 )
 
@@ -21,6 +23,7 @@ const (
 	defaultReuseContainerTimeout       = time.Second * 20 // we use 20s because of 30s is default go test timeout
 	defaultReuseContainerRecreateOnErr = false
 	defaultRemoveContainerOnExists     = false
+	defaultLabelKeyValue               = "tcontainer"
 
 	retryOperationMaxInterval = time.Second * 5
 )
@@ -51,6 +54,7 @@ type testContainerOptions struct {
 	repository                  string
 	imageTag                    string
 	containerName               string
+	labels                      map[string]string
 	env                         []string
 	cmd                         []string
 	retryOperation              RetryOperation
@@ -63,6 +67,78 @@ type testContainerOptions struct {
 	reuseContainerTimeout       time.Duration
 	reuseContainerRecreateOnErr bool
 	removeContainerOnExists     bool
+}
+
+func applyTestContainerOptions(repository string, customOpts ...TestContainerOption) (
+	opts *testContainerOptions, err error,
+) {
+	opts = &testContainerOptions{
+		repository:                  repository,
+		imageTag:                    defaultImageTag,
+		containerName:               "",
+		labels:                      map[string]string{defaultLabelKeyValue: defaultLabelKeyValue},
+		env:                         nil,
+		cmd:                         nil,
+		retryOperation:              nil,
+		retryTimeout:                defaultRetryTimeout,
+		exposedPorts:                nil,
+		portBindings:                nil,
+		containerExpiry:             defaultContainerExpiry,
+		autoremoveContainer:         defaultAutoremoveContainer,
+		reuseContainer:              defaultReuseContainer,
+		reuseContainerTimeout:       defaultReuseContainerTimeout,
+		reuseContainerRecreateOnErr: defaultReuseContainerRecreateOnErr,
+		removeContainerOnExists:     defaultRemoveContainerOnExists,
+	}
+
+	for _, customOpt := range customOpts {
+		err = customOpt(opts)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return opts, nil
+}
+
+func (o testContainerOptions) convertToDockertest() (
+	runOpts *dockertest.RunOptions, hostConfigOpts []func(*docker.HostConfig),
+) {
+	var auth docker.AuthConfiguration
+
+	// TODO: add aptions for all
+	runOpts = &dockertest.RunOptions{
+		Hostname:     "",
+		Name:         o.containerName,
+		Repository:   o.repository,
+		Tag:          o.imageTag,
+		Env:          o.env,
+		Entrypoint:   nil,
+		Cmd:          o.cmd,
+		Mounts:       nil,
+		Links:        nil,
+		ExposedPorts: o.exposedPorts,
+		ExtraHosts:   nil,
+		CapAdd:       nil,
+		SecurityOpt:  nil,
+		DNS:          nil,
+		WorkingDir:   "",
+		NetworkID:    "",
+		Networks:     nil,
+		Labels:       o.labels,
+		Auth:         auth,
+		PortBindings: o.portBindings,
+		Privileged:   false,
+		User:         "",
+		Tty:          false,
+		Platform:     "linux/" + runtime.GOARCH,
+	}
+	hostConfigOpts = append(hostConfigOpts, func(config *docker.HostConfig) {
+		config.AutoRemove = o.autoremoveContainer
+		config.RestartPolicy = docker.RestartPolicy{Name: "no", MaximumRetryCount: 0}
+	})
+
+	return runOpts, hostConfigOpts
 }
 
 // WithImageTag - use custom image tag instead of default (latest).
@@ -127,7 +203,7 @@ func WithContainerName(containerName string) TestContainerOption {
 // Example usage:
 //
 //	WithContainerNameFromTest(t) // "Test/with/invalid/chars" -> "Test-with-invalid-chars"
-func WithContainerNameFromTest(t testing.TB) TestContainerOption {
+func WithContainerNameFromTest(t testing.TB) TestContainerOption { // TODO: prefix / postfix are often needed
 	var containerName string
 	if t != nil {
 		containerName = containerNameInvalidCharsRegexp.ReplaceAllString(t.Name(), "-")
@@ -432,35 +508,4 @@ func WithRemoveContainerOnExists(removeContainerOnExists bool) TestContainerOpti
 	}
 
 	return optionWrap
-}
-
-func applyTestContainerOptions(repository string, customOpts ...TestContainerOption) (
-	opts *testContainerOptions, err error,
-) {
-	opts = &testContainerOptions{
-		repository:                  repository,
-		imageTag:                    defaultImageTag,
-		containerName:               "",
-		env:                         nil,
-		cmd:                         nil,
-		retryOperation:              nil,
-		retryTimeout:                defaultRetryTimeout,
-		exposedPorts:                nil,
-		portBindings:                nil,
-		containerExpiry:             defaultContainerExpiry,
-		autoremoveContainer:         defaultAutoremoveContainer,
-		reuseContainer:              defaultReuseContainer,
-		reuseContainerTimeout:       defaultReuseContainerTimeout,
-		reuseContainerRecreateOnErr: defaultReuseContainerRecreateOnErr,
-		removeContainerOnExists:     defaultRemoveContainerOnExists,
-	}
-
-	for _, customOpt := range customOpts {
-		err = customOpt(opts)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	return opts, nil
 }

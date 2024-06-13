@@ -1,6 +1,7 @@
 package tcontainer
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -8,7 +9,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -24,50 +24,12 @@ import (
 const containerAPIPort = 80
 
 func TestMain(m *testing.M) {
-	err := removeOldContainers()
+	err := RemoveAll(context.Background())
 	if err != nil {
-		log.Fatal("failed to removeOldContainers:", err)
+		log.Fatal("failed to RemoveAll:", err)
 	}
 
 	goleak.VerifyTestMain(m)
-}
-
-func removeOldContainers() error {
-	dockerPool, err := dockertest.NewPool("")
-	if err != nil {
-		return fmt.Errorf("failed to dockertest.NewPool: %w", err)
-	}
-
-	oldContainers, err := dockerPool.Client.ListContainers(docker.ListContainersOptions{
-		All:     true,
-		Filters: map[string][]string{"label": {labelKeyValue + "=" + labelKeyValue}},
-	})
-	if err != nil {
-		return fmt.Errorf("failed to dockerPool.Client.ListContainers: %w", err)
-	}
-
-	mu := &sync.Mutex{}
-	wg := &sync.WaitGroup{}
-	for _, oldContainer := range oldContainers {
-		oldContainer := oldContainer
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			removeErr := dockerPool.Client.RemoveContainer(docker.RemoveContainerOptions{
-				ID:            oldContainer.ID,
-				RemoveVolumes: true,
-				Force:         true,
-			})
-			if removeErr != nil {
-				mu.Lock()
-				err = errors.Join(err, fmt.Errorf("failed to dockerPool.Client.RemoveContainer `%s`: %w", oldContainer.ID, removeErr))
-				mu.Unlock()
-			}
-		}()
-	}
-	wg.Wait()
-
-	return err
 }
 
 // newBusybox - creates minimal configureated busybox container for tests.
@@ -1032,4 +994,40 @@ func Test_checkContainerConfig(t *testing.T) {
 			require.ErrorIs(err, tt.err)
 		})
 	}
+}
+
+func Test_RemoveAll(t *testing.T) { //nolint:paralleltest
+	require := require.New(t)
+	assert := assert.New(t)
+
+	// create containers using this package
+	containerName := t.Name()
+	dockerPool, container, err := newBusybox(WithContainerName(containerName + "1"))
+	require.NoError(err)
+	_, container2, err := newBusybox(WithContainerName(containerName + "2"))
+	require.NoError(err)
+
+	// create some other container
+	_, container3, err := newBusybox(func(options *testContainerOptions) (err error) { options.labels = nil; return nil })
+	require.NoError(err)
+	t.Cleanup(func() { assert.NoError(container3.Close()) })
+
+	err = RemoveAll(context.Background())
+	require.NoError(err)
+
+	notRemovedContainers, err := dockerPool.Client.ListContainers(docker.ListContainersOptions{
+		All:     true,
+		Context: context.Background(),
+	})
+	require.NoError(err)
+
+	found := false
+	for _, notRemovedContainer := range notRemovedContainers {
+		require.NotEqual(notRemovedContainer.ID, container.Container.ID)
+		require.NotEqual(notRemovedContainer.ID, container2.Container.ID)
+		if !found {
+			found = notRemovedContainer.ID == container3.Container.ID
+		}
+	}
+	require.True(found, "side container unexpectedly removed")
 }
