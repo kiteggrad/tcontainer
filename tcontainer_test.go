@@ -8,7 +8,6 @@ import (
 	"net"
 	"net/http"
 	"strconv"
-	"strings"
 	"testing"
 	"time"
 
@@ -150,18 +149,18 @@ func Test_applyTestContainerOptions(t *testing.T) {
 			require.NoError(err)
 			require.NotEmpty(options)
 
-			options.containerName = strings.ReplaceAll(t.Name(), "/", "-")
+			options.containerName = "invalid-between-joined"
 
 			return testCase{
-				name: "WithContainerNameFromTest",
-				args: args{customOpts: []TestContainerOption{WithContainerNameFromTest(t)}},
+				name: "WithContainerName",
+				args: args{customOpts: []TestContainerOption{WithContainerName("invalid/between", "", "", "joined")}},
 				want: want{options: options},
 			}
 		},
 		func(_ *testing.T) testCase {
 			return testCase{
-				name: "WithContainerNameFromTest_empty",
-				args: args{customOpts: []TestContainerOption{WithContainerNameFromTest(nil)}},
+				name: "WithContainerName_empty",
+				args: args{customOpts: []TestContainerOption{WithContainerName("", "")}},
 				want: want{err: ErrOptionInvalid},
 			}
 		},
@@ -805,7 +804,7 @@ func Test_New_WithReuseContainer_true(t *testing.T) {
 			assert := assert.New(t)
 
 			// create container
-			dockerPool, container, err := newBusybox(WithContainerNameFromTest(t), WithAutoremove(false))
+			dockerPool, container, err := newBusybox(WithContainerName(t.Name()), WithAutoremove(false))
 			require.NoError(err)
 			t.Cleanup(func() { assert.NoError(container.Close()) })
 			containerIDSrc := container.Container.ID
@@ -814,7 +813,7 @@ func Test_New_WithReuseContainer_true(t *testing.T) {
 			test.invalidateContainer(require, dockerPool, container)
 
 			// try reuse container
-			_, container, err = newBusybox(WithContainerNameFromTest(t), WithReuseContainer(true, 0, false))
+			_, container, err = newBusybox(WithContainerName(t.Name()), WithReuseContainer(true, 0, false))
 			require.NoError(err)
 			require.Equal(containerIDSrc, container.Container.ID)  // check we reuse the container
 			require.NoError(pingBusyboxContainerServer(container)) // check container is ok
@@ -981,14 +980,14 @@ func Test_checkContainerConfig(t *testing.T) {
 			assert := assert.New(t)
 
 			tt.args.oldContainerOptions = append(
-				[]TestContainerOption{WithContainerNameFromTest(t)},
+				[]TestContainerOption{WithContainerName(t.Name())},
 				tt.args.oldContainerOptions...)
 			_, oldContainer, err := newBusybox(tt.args.oldContainerOptions...)
 			require.NoError(err)
 			t.Cleanup(func() { assert.NoError(oldContainer.Close()) })
 
 			tt.args.newContainerOptions = append(
-				[]TestContainerOption{WithContainerNameFromTest(t), WithReuseContainer(true, 0, false)},
+				[]TestContainerOption{WithContainerName(t.Name()), WithReuseContainer(true, 0, false)},
 				tt.args.newContainerOptions...)
 			_, _, err = newBusybox(tt.args.newContainerOptions...)
 			require.ErrorIs(err, tt.err)

@@ -98,22 +98,14 @@ func main() {
     tcontainer.WithImageTag("v1.0.0")
     ```
 - ### `WithContainerName`
-    Allows you to specify your own name for the container
+    Allows you to specify your own name for the container.
+    - All invalid characters will be repaced to "-".
+    - Not empty containerNameParts will be joined with "-" separator, empty parts will be removed.
 
     Default: docker generates a random name
 
     ```go
-    tcontainer.WithContainerName("test-postgres")
-    ```
-- ### `WithContainerNameFromTest`
-    Allows you to specify custom container name by parse it from test name.
-    All invalid characters in t.Name() will be repaced to "-".
-
-    Default: docker generates a random name
-
-    ```go
-    // "Test/with/invalid/chars" -> "Test-with-invalid-chars"
-    tcontainer.WithContainerNameFromTest(t)
+    tcontainer.WithContainerName(t.Name(), "redis") // "Test/with/invalid/chars", "redis" -> "Test-with-invalid-chars-redis"
     ```
 - ### `WithENV`
     Allows you to pass a set of env variables to the container
