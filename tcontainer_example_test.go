@@ -1,25 +1,27 @@
 package tcontainer_test
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
 	"time"
 
 	"github.com/ory/dockertest/v3"
+	"github.com/ory/dockertest/v3/docker"
 
 	"github.com/kiteggrad/tcontainer"
 )
 
-func ExampleNew() {
-	const containerAPIPort = 80
+func ExamplePool_Run() {
+	const containerAPIPort = "80"
 	const serverHelloMesage = "Hello, World!"
-	startServerCMD := fmt.Sprintf(`echo '%s' > /index.html && httpd -p %d -h / && tail -f /dev/null`, serverHelloMesage, containerAPIPort)
+	startServerCMD := fmt.Sprintf(`echo '%s' > /index.html && httpd -p %s -h / && tail -f /dev/null`, serverHelloMesage, containerAPIPort)
 
 	// define function to check the server is ready
 	url := ""
-	pingServerRetry := func(_ *dockertest.Resource, apiEndpoints map[int]tcontainer.APIEndpoint) (err error) {
-		url = "http://" + apiEndpoints[containerAPIPort].NetJoinHostPort()
+	pingServerRetry := func(container *dockertest.Resource) (err error) {
+		url = "http://" + tcontainer.GetAPIEndpoints(container)[containerAPIPort].NetJoinHostPort()
 
 		resp, err := http.Get(url)
 		if err != nil {
@@ -34,26 +36,46 @@ func ExampleNew() {
 		return nil
 	}
 
+	pool := tcontainer.MustNewPool("")
+
+	// you can remove all containers and images created by this package (from previous tests run)
+	// in order to avoid errors like ErrContainerAlreadyExists
+	err := pool.Prune(context.Background())
+	if err != nil {
+		panic(err)
+	}
+
 	// run container with the server
-	dockerPool, container, err := tcontainer.New(
+	container, err := pool.Run(
+		context.Background(),
 		"busybox",
-		tcontainer.WithImageTag("latest"),
 		tcontainer.WithContainerName("my-test-server"),
-		tcontainer.WithENV("SOME_ENV=value"),
-		tcontainer.WithCMD("sh", "-c", startServerCMD),
-		tcontainer.WithExposedPorts(containerAPIPort),
-		tcontainer.WithRetry(pingServerRetry, 0),     // 0 - defailt timeout
-		tcontainer.WithReuseContainer(true, 0, true), // reuseContainer, reuseTimeout, recreateOnError
-		tcontainer.WithAutoremove(false),
-		tcontainer.WithExpiry(time.Minute*10),
-		tcontainer.WithPortBindings(map[int]int{80: 8080}),
-		tcontainer.WithRemoveContainerOnExists(false), // not compatible with WithReuseContainer option
+		func(options *tcontainer.RunOptions) (err error) {
+			// set by one field instead of *options = tcontainer.RunOptions{...}
+			// in order to not owerride default values (like options.Retry.Timeout)
+
+			options.Tag = "latest"
+			options.Env = []string{"SOME_ENV=value"}
+			options.Cmd = []string{"sh", "-c", startServerCMD}
+			options.ExposedPorts = []string{containerAPIPort}
+			options.HostConfig.AutoRemove = false
+			options.HostConfig.RestartPolicy = docker.RestartPolicy{Name: "no", MaximumRetryCount: 0}
+			options.Retry.Operation = pingServerRetry
+			options.Reuse.Reuse = true
+			options.Reuse.RecreateOnErr = true
+			options.ContainerExpiry = time.Minute * 10
+			options.HostConfig.PortBindings = map[docker.Port][]docker.PortBinding{
+				"80": {{HostIP: "", HostPort: "8080"}},
+			}
+			options.RemoveOnExists = false // not compatible with Reuse option
+
+			return nil
+		},
 	)
 	if err != nil {
 		panic(err)
 	}
 	defer container.Close() // not necessary if you want to WithReuseContainer
-	_ = dockerPool
 
 	// make request to the server
 	resp, err := http.Get(url)

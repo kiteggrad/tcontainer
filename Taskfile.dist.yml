@@ -6,33 +6,6 @@ tasks:
     cmd: task --list-all
     silent: true
 
-  deps:
-    - go install github.com/mfridman/tparse@latest
-    - go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
-    - go install mvdan.cc/gofumpt@latest
-    - go install github.com/daixiang0/gci@latest
-
-  precommit:
-    desc: make some checks and actions that we have to do before commit
-    cmds: 
-      - go mod tidy
-      - task: format
-      - task: lint
-      - task: test
-
-  test:
-    cmds: 
-      - go test -v -json -covermode=atomic -coverprofile=coverage.out -race -count=1 -run=${RUN} ./... | tparse -all -follow
-
-  lint:
-    cmds: 
-      - golangci-lint run
-
-  format: 
-    cmds:
-      - gofumpt -w .
-      - gci write -s standard -s default -s "prefix(github.com/kiteggrad)" -s localmodule -s blank -s dot .
-
   taskfile-init-local:
     desc: init local taskfile if not exists
     summary: init local taskfile if not exists that override all commands from Taskfile.dist.yml
@@ -42,3 +15,42 @@ tasks:
       - test -e Taskfile.yml
     cmds:
       - cp Taskfile.dist.yml Taskfile.yml
+
+  deps:
+    - go install github.com/mfridman/tparse@latest
+    - go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+    - go install mvdan.cc/gofumpt@latest
+    - go install github.com/daixiang0/gci@latest
+    - go install github.com/vektra/mockery/v2@latest
+
+  precommit:
+    desc: make some checks and actions that we have to do before commit
+    cmds: 
+      - go mod tidy
+      - task: format
+      - task: mocks
+      - task: lint
+      - task: test
+
+  format: 
+    cmds:
+      - gofumpt -w .
+      - find . -not -path "*/vendor/*" -not -path '*/mocks/*' -not -path '*/.git/*' -type f -path '*.go'
+        -exec sh -c 'gci write -s standard -s default -s "prefix(github.com/kiteggrad)" -s localmodule -s blank -s dot {}' \;
+
+  mocks:
+    desc: regenerate mocks
+    cmds:
+      # remove mocks
+      - find . -not -path "*/vendor/*" -not -path '*/.git/*' -path '*/mocks/*'          -delete # remove files
+      - find . -not -path "*/vendor/*" -not -path '*/.git/*' -path '*/mocks'    -type d -delete # remove empty mocks dirs
+      # generate mocks
+      - mockery
+
+  lint:
+    cmds: 
+      - golangci-lint run
+
+  test:
+    cmds: 
+      - go test -v -json -covermode=atomic -coverprofile=coverage.out -race -count=1 -run=${RUN} ./... | tparse -all -follow

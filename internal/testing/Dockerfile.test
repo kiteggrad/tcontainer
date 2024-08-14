@@ -1,0 +1,3 @@
+FROM scratch
+# for aviod error "No image was generated. Is your Dockerfile empty?"
+ENV key=value

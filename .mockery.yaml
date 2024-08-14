@@ -1,0 +1,13 @@
+log-level: warn
+disable-version-string: true
+with-expecter: true
+dir: "{{.InterfaceDirRelative}}/mocks"
+mockname: "{{.InterfaceName | firstUpper}}"
+outpkg: "{{.PackageName}}_mocks"
+filename: '{{.InterfaceName | snakecase}}.go'
+all: true
+
+packages:
+  github.com/kiteggrad/tcontainer:
+    config:
+      recursive: true
