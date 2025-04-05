@@ -3,6 +3,8 @@
 package tcontainer_mocks
 
 import (
+	context "context"
+
 	dockertest "github.com/ory/dockertest/v3"
 	mock "github.com/stretchr/testify/mock"
 )
@@ -20,17 +22,17 @@ func (_m *RetryOperation) EXPECT() *RetryOperation_Expecter {
 	return &RetryOperation_Expecter{mock: &_m.Mock}
 }
 
-// Execute provides a mock function with given fields: container
-func (_m *RetryOperation) Execute(container *dockertest.Resource) error {
-	ret := _m.Called(container)
+// Execute provides a mock function with given fields: ctx, container
+func (_m *RetryOperation) Execute(ctx context.Context, container *dockertest.Resource) error {
+	ret := _m.Called(ctx, container)
 
 	if len(ret) == 0 {
 		panic("no return value specified for Execute")
 	}
 
 	var r0 error
-	if rf, ok := ret.Get(0).(func(*dockertest.Resource) error); ok {
-		r0 = rf(container)
+	if rf, ok := ret.Get(0).(func(context.Context, *dockertest.Resource) error); ok {
+		r0 = rf(ctx, container)
 	} else {
 		r0 = ret.Error(0)
 	}
@@ -44,14 +46,15 @@ type RetryOperation_Execute_Call struct {
 }
 
 // Execute is a helper method to define mock.On call
+//   - ctx context.Context
 //   - container *dockertest.Resource
-func (_e *RetryOperation_Expecter) Execute(container interface{}) *RetryOperation_Execute_Call {
-	return &RetryOperation_Execute_Call{Call: _e.mock.On("Execute", container)}
+func (_e *RetryOperation_Expecter) Execute(ctx interface{}, container interface{}) *RetryOperation_Execute_Call {
+	return &RetryOperation_Execute_Call{Call: _e.mock.On("Execute", ctx, container)}
 }
 
-func (_c *RetryOperation_Execute_Call) Run(run func(container *dockertest.Resource)) *RetryOperation_Execute_Call {
+func (_c *RetryOperation_Execute_Call) Run(run func(ctx context.Context, container *dockertest.Resource)) *RetryOperation_Execute_Call {
 	_c.Call.Run(func(args mock.Arguments) {
-		run(args[0].(*dockertest.Resource))
+		run(args[0].(context.Context), args[1].(*dockertest.Resource))
 	})
 	return _c
 }
@@ -61,7 +64,7 @@ func (_c *RetryOperation_Execute_Call) Return(err error) *RetryOperation_Execute
 	return _c
 }
 
-func (_c *RetryOperation_Execute_Call) RunAndReturn(run func(*dockertest.Resource) error) *RetryOperation_Execute_Call {
+func (_c *RetryOperation_Execute_Call) RunAndReturn(run func(context.Context, *dockertest.Resource) error) *RetryOperation_Execute_Call {
 	_c.Call.Return(run)
 	return _c
 }

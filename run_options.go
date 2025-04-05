@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cenkalti/backoff/v4"
+	"github.com/cenkalti/backoff/v5"
 	"github.com/ory/dockertest/v3"
 	"github.com/ory/dockertest/v3/docker"
 )
@@ -25,10 +25,8 @@ const (
 	defaultReuseContainerRecreateOnErr = false
 	defaultReuseBackoffInitialInterval = time.Second
 	defaultReuseBackoffMaxInterval     = time.Second
-	defaultReuseBackoffMaxElapsedTime  = time.Second * 20 // we use 20s because of 30s is default go test timeout
 
-	defaultRetryBackoffMaxInterval    = time.Second * 5
-	defaultRetryBackoffMaxElapsedTime = time.Second * 20 // we use 20s because of 30s is default go test timeout
+	defaultRetryBackoffMaxInterval = time.Second * 5
 )
 
 var (
@@ -87,7 +85,6 @@ type (
 	//
 	// # Default:
 	//	- `Reuse` - `false`
-	//	- `Backoff.MaxElapsedTime` - `time.Second * 20`
 	//	- `RecreateOnErr` - `false`
 	//	- `ConfigChecks` - checks that old container have the same image, exposed ports and port bindings
 	//
@@ -96,7 +93,6 @@ type (
 	//		options.Reuse.Reuse = true
 	//		reuseBackoff := backoff.NewExponentialBackOff()
 	//		reuseBackoff.MaxInterval = time.Second
-	//		reuseBackoff.MaxElapsedTime = time.Second * 20
 	//		reuseBackoff.Reset()
 	//		options.Reuse.Backoff = reuseBackoff
 	//		options.Reuse.ConfigChecks = append(options.Reuse.ConfigChecks,
@@ -127,17 +123,15 @@ type (
 	//
 	// # Default:
 	//	- if `Retry.Operation` is not performed, `Run` function complete immediately after container creation
-	//	- `Retry.Backoff.MaxElapsedTime` - `time.Second * 20`
 	//
 	// # Example:
 	//	func(options *RunOptions) (err error) {
-	//	    options.Retry.Operation = func(container *dockertest.Resource) (err error) {
+	//	    options.Retry.Operation = func(ctx context.Context, container *dockertest.Resource) (err error) {
 	//	        fmt.Println("ping")
 	//	        return nil
 	//	    }
 	//	    retryBackoff := backoff.NewExponentialBackOff()
 	//	    retryBackoff.MaxInterval = time.Second
-	//	    retryBackoff.MaxElapsedTime = time.Second * 20
 	//	    retryBackoff.Reset()
 	//	    options.Retry.Backoff = retryBackoff
 	//	    return nil
@@ -216,13 +210,11 @@ func ApplyRunOptions(repository string, customOpts ...RunOption) (
 func (o RunOptions) getDefault(repository string) (defaultRunOptions RunOptions) {
 	retryBackoff := backoff.NewExponentialBackOff()
 	retryBackoff.MaxInterval = defaultRetryBackoffMaxInterval
-	retryBackoff.MaxElapsedTime = defaultRetryBackoffMaxElapsedTime
 	retryBackoff.Reset()
 
 	reuseBackoff := backoff.NewExponentialBackOff()
 	reuseBackoff.InitialInterval = defaultReuseBackoffInitialInterval
 	reuseBackoff.MaxInterval = defaultReuseBackoffMaxInterval
-	reuseBackoff.MaxElapsedTime = defaultReuseBackoffMaxElapsedTime
 	reuseBackoff.Reset()
 
 	return RunOptions{
@@ -343,22 +335,22 @@ func (o RunOptions) toDockertest() (dockertestRunOptions *dockertest.RunOptions)
 		Env:          o.Env,
 		Entrypoint:   o.Entrypoint,
 		Cmd:          o.Cmd,
+		Mounts:       o.HostConfig.Binds,
+		Links:        o.HostConfig.Links,
 		ExposedPorts: o.ExposedPorts,
+		ExtraHosts:   o.HostConfig.ExtraHosts,
+		CapAdd:       o.HostConfig.CapAdd,
+		SecurityOpt:  o.HostConfig.SecurityOpt,
+		DNS:          o.HostConfig.DNS,
 		WorkingDir:   o.WorkingDir,
 		NetworkID:    "",
 		Networks:     o.Networks,
 		Labels:       o.Labels,
 		Auth:         o.Auth,
+		PortBindings: o.HostConfig.PortBindings,
+		Privileged:   o.HostConfig.Privileged,
 		User:         o.User,
 		Tty:          o.Tty,
 		Platform:     o.Platform,
-		Mounts:       o.HostConfig.Binds,
-		Links:        o.HostConfig.Links,
-		ExtraHosts:   o.HostConfig.ExtraHosts,
-		CapAdd:       o.HostConfig.CapAdd,
-		SecurityOpt:  o.HostConfig.SecurityOpt,
-		DNS:          o.HostConfig.DNS,
-		PortBindings: o.HostConfig.PortBindings,
-		Privileged:   o.HostConfig.Privileged,
 	}
 }

@@ -43,7 +43,7 @@ type (
 	PrivatePort = string
 
 	// RetryOperation is an exponential backoff retry operation. You can use it to wait for e.g. mysql to boot up.
-	RetryOperation func(container *dockertest.Resource) (err error)
+	RetryOperation func(ctx context.Context, container *dockertest.Resource) (err error)
 )
 
 // NetJoinHostPort - combines ip and port into a network address of the form "host:port".
@@ -133,4 +133,8 @@ func (p Pool) findImageByUUID(ctx context.Context, imageUUID string) (image dock
 	}
 
 	return imageList[0], nil
+}
+
+func ptr[T any](v T) *T {
+	return &v
 }

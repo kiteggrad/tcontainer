@@ -1,2 +1,4 @@
 # Output of the go coverage tool
 *.out
+# Binaries of dependencies
+.deps_bin

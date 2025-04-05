@@ -20,7 +20,7 @@ func ExamplePool_Run() {
 
 	// define function to check the server is ready
 	url := ""
-	pingServerRetry := func(container *dockertest.Resource) (err error) {
+	pingServerRetry := func(_ context.Context, container *dockertest.Resource) (err error) {
 		url = "http://" + tcontainer.GetAPIEndpoints(container)[containerAPIPort].NetJoinHostPort()
 
 		resp, err := http.Get(url)

@@ -1,7 +1,11 @@
+version: "2"
+
+run:
+  timeout: 5m
+
 linters:
   enable:
     - errcheck
-    - gosimple
     - govet
     - ineffassign
     - staticcheck
@@ -28,12 +32,10 @@ linters:
     - errorlint
     - exhaustive
     - exhaustruct
-    - exportloopref
     - fatcontext
     - forbidigo
     - forcetypeassert
     - funlen
-    - gci
     - ginkgolinter
     - gocheckcompilerdirectives
     - gochecknoglobals
@@ -45,10 +47,7 @@ linters:
     - gocyclo
     - godot
     # - godox
-    - gofmt
-    - gofumpt
     - goheader
-    - goimports
     - gomoddirectives
     - gomodguard
     - goprintffuncname
@@ -89,10 +88,8 @@ linters:
     - sloglint
     - spancheck
     - sqlclosecheck
-    - stylecheck
     - tagalign
     - tagliatelle
-    - tenv
     - testableexamples
     - testifylint
     # - testpackage
@@ -108,43 +105,50 @@ linters:
     # - wsl
     - zerologlint
 
-linters-settings:
-  gci:
-    sections:
-      - standard
-      - default
-      - prefix(github.com/kiteggrad)
-      - localmodule
-      - blank
-      - dot
-  varnamelen:
-    ignore-decls:
-      - wg *sync.WaitGroup
-      - mu *sync.Mutex
-      - b backoff.BackOffContext
-      - b backoff.BackOff
-  revive:
-    rules:
-      - name: unused-parameter
-        exclude:
+  settings:
+    varnamelen:
+      ignore-decls:
+        - wg *sync.WaitGroup
+        - mu *sync.Mutex
+        - b backoff.BackOffContext
+        - b backoff.BackOff
+    revive:
+      rules:
+        - name: unused-parameter
+          exclude:
           - func(t *testing.T) testCase {
 
-issues:
-  exclude-rules:
-    - path: .*_test.go
-      text: net/http.Get must not be called
-    - path: .*_test.go
-      linters:
-        - lll
-        - funlen
-        - gosec
-        - exhaustruct
-        - maintidx
-        - varnamelen
-    - path: .*_test.go
-      linters:
-        - revive
-      text: "unused-parameter: parameter 't' seems to be unused, consider removing or renaming it as _"
+  exclusions:
+    rules:
+      - path: .*_test.go
+        text: net/http.Get must not be called
+      - path: .*_test.go
+        linters:
+          - lll
+          - funlen
+          - gosec
+          - exhaustruct
+          - maintidx
+          - varnamelen
+          - errcheck
+      - path: .*_test.go
+        linters:
+          - revive
+        text: "unused-parameter: parameter 't' seems to be unused, consider removing or renaming it as _"
 
-run:
-  timeout: 5m
+formatters:
+  enable:
+    - gci
+    - gofmt
+    - goimports
+    - gofumpt
+
+  settings:
+    gci:
+      sections:
+        - standard
+        - default
+        - prefix(github.com/kiteggrad)
+        - localmodule
+        - blank
+        - dot

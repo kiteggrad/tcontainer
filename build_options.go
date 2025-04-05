@@ -36,6 +36,7 @@ type (
 		RawJSONStream       bool
 		Memory              int64
 		Memswap             int64
+		ShmSize             int64
 		CPUShares           int64
 		CPUQuota            int64
 		CPUPeriod           int64
@@ -53,6 +54,9 @@ type (
 		CgroupParent        string
 		SecurityOpt         []string
 		Target              string
+		Version             string
+		Outputs             string
+		ExtraHosts          string
 	}
 
 	// BuildOption - option for (Pool).Build / (Pool).BuildAndGet functions.
@@ -152,6 +156,7 @@ func (o BuildOptions) toDockertest(ctx context.Context) (dockertestBuildOptions 
 		RawJSONStream:       o.RawJSONStream,
 		Memory:              o.Memory,
 		Memswap:             o.Memswap,
+		ShmSize:             o.ShmSize,
 		CPUShares:           o.CPUShares,
 		CPUQuota:            o.CPUQuota,
 		CPUPeriod:           o.CPUPeriod,
@@ -171,7 +176,10 @@ func (o BuildOptions) toDockertest(ctx context.Context) (dockertestBuildOptions 
 		CgroupParent:        o.CgroupParent,
 		SecurityOpt:         o.SecurityOpt,
 		Target:              o.Target,
+		Version:             o.Version,
 		Platform:            o.Platform,
+		Outputs:             o.Outputs,
+		ExtraHosts:          o.ExtraHosts,
 		Context:             ctx,
 	}
 }

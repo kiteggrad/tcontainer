@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"strconv"
 	"testing"
 	"time"
 
@@ -13,7 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/kiteggrad/freeport"
+	"github.com/kiteggrad/freeport/v2"
 )
 
 const containerAPIPort = "80"
@@ -41,7 +40,7 @@ func runBusybox(ctx context.Context, customOpts ...RunOption) (pool Pool, contai
 }
 
 // pingBusyboxContainerServer - we can use this to check that container is healthy.
-func pingBusyboxContainerServer(container *dockertest.Resource) error {
+func pingBusyboxContainerServer(_ context.Context, container *dockertest.Resource) error {
 	endpoint := GetAPIEndpoints(container)[containerAPIPort]
 
 	resp, err := http.Get("http://" + endpoint.NetJoinHostPort())
@@ -280,8 +279,8 @@ func Test_RunOptions_Reuse_true(t *testing.T) {
 					return nil
 				})
 			require.NoError(err)
-			require.Equal(containerIDSrc, container.Container.ID)  // check we reuse the container
-			require.NoError(pingBusyboxContainerServer(container)) // check container is ok
+			require.Equal(containerIDSrc, container.Container.ID)               // check we reuse the container
+			require.NoError(pingBusyboxContainerServer(t.Context(), container)) // check container is ok
 		})
 	}
 }
@@ -303,7 +302,7 @@ func Test_RunOptions_Reuse_RecreateOnError(t *testing.T) {
 	_, container, err = runBusybox(context.Background(), WithContainerName(t.Name()), func(options *RunOptions) (err error) {
 		options.Reuse.Reuse = true
 		options.Reuse.RecreateOnErr = true
-		options.ExposedPorts = []string{containerAPIPort, strconv.Itoa(freeport.MustGet())}
+		options.ExposedPorts = []string{containerAPIPort, freeport.MustGet().String()}
 		return nil
 	})
 	require.NoError(err)

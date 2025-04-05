@@ -5,11 +5,9 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/cenkalti/backoff/v4"
+	"github.com/cenkalti/backoff/v5"
 	"github.com/ory/dockertest/v3"
 	"github.com/ory/dockertest/v3/docker"
-
-	"github.com/kiteggrad/tcontainer/internal/retry"
 )
 
 // Run - creates and runs new test container.
@@ -41,9 +39,10 @@ func (p Pool) run(
 	}
 
 	if options.Retry.Operation != nil {
-		err = retry.Retry(
-			func() (err error) { return options.Retry.Operation(container) },
-			backoff.WithContext(options.Retry.Backoff, ctx),
+		_, err = backoff.Retry(
+			ctx,
+			func() (_ struct{}, err error) { return struct{}{}, options.Retry.Operation(ctx, container) },
+			backoff.WithBackOff(options.Retry.Backoff),
 		)
 		if err != nil {
 			_ = p.Pool.Purge(container)
@@ -125,34 +124,37 @@ func (p Pool) reuseOrRecreateContainer(
 func (p Pool) reuseContainer(
 	ctx context.Context, options RunOptions,
 ) (container *dockertest.Resource, err error) {
-	try := func() (err error) {
+	try := func() (container *dockertest.Resource, err error) {
 		var ok bool
 		container, ok = p.Pool.ContainerByName(fmt.Sprintf("^%s$", options.Name))
 		if !ok {
-			return backoff.Permanent(fmt.Errorf("failed to p.ContainerByName `%s`: %w", options.Name, err))
+			return nil, backoff.Permanent(fmt.Errorf("failed to p.ContainerByName `%s`: %w", options.Name, err))
 		}
 
 		err = checkContainerState(container.Container)
 		if err != nil {
 			err = fmt.Errorf("failed to checkContainerState: %w", err)
 			if errors.Is(err, ErrUnreusableState) {
-				return backoff.Permanent(err)
+				return nil, backoff.Permanent(err)
 			}
-			return err
+			return container, err
 		}
 
 		for _, checkContainerConfig := range options.Reuse.ConfigChecks {
 			err = checkContainerConfig(container.Container, options)
 			if err != nil {
-				return backoff.Permanent(fmt.Errorf("%w: failed to checkContainerConfig: %w", ErrReuseContainerConflict, err))
+				return nil, backoff.Permanent(fmt.Errorf("%w: failed to checkContainerConfig: %w", ErrReuseContainerConflict, err))
 			}
 		}
 
-		return nil
+		return container, nil
 	}
 
-	if try() == nil {
+	container, err = try()
+	if err == nil {
 		return container, nil
+	} else if errors.As(err, ptr((*backoff.PermanentError)(nil))) {
+		return nil, err
 	}
 
 	err = repairForReuse(p.Pool.Client, container.Container)
@@ -160,7 +162,7 @@ func (p Pool) reuseContainer(
 		return nil, fmt.Errorf("failed to repairForReuse: %w", err)
 	}
 
-	err = retry.Retry(try, backoff.WithContext(options.Reuse.Backoff, ctx))
+	container, err = backoff.Retry(ctx, try, backoff.WithBackOff(options.Reuse.Backoff))
 	if err != nil {
 		return nil, fmt.Errorf("failed to retry after repairForReuse: %w", err)
 	}
